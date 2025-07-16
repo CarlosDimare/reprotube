@@ -1,153 +1,252 @@
 <!DOCTYPE html>
-<html lang="es">
+<html>
 <head>
-  <meta charset="UTF-8" />
   <title>Reprotube</title>
   <style>
-    body { font-family: Tahoma, sans-serif; background: #d4d0c8; padding: 10px; font-size: 13px; }
+    body { font-family: Tahoma; background: #d4d0c8; padding: 10px; font-size: 13px; }
     .panel { background: #fff; border: 2px inset #aaa; padding: 10px; margin-bottom: 10px; }
     .title { background: #000080; color: white; padding: 5px; margin-bottom: 5px; font-weight: bold; }
-    .playlist { max-height: 250px; overflow-y: auto; border: 1px solid #999; padding-left: 0; list-style: none; }
+    .playlist { max-height: 250px; overflow-y: auto; border: 1px solid #999; padding-left: 0; }
     .track {
-      padding: 5px; border-bottom: 1px solid #ccc; cursor: pointer; user-select: none;
-      display: flex; justify-content: space-between; align-items: center;
+      padding: 5px; border-bottom: 1px solid #ccc; cursor: grab; user-select: none; display: flex; align-items: center; justify-content: space-between;
     }
-    .track.playing { background: #ff0000; color: white; font-weight: bold; }
-    .track.next-up { background: #00cc00; color: white; }
-    .controls button {
-      font-size: 20px; padding: 6px 12px; margin: 0 4px; cursor: pointer;
-      background: #eee; border: 1px solid #aaa; border-radius: 4px;
+    .track.playing { background: #ffcccc; font-weight: bold; }
+    .track.queued { background: #ccffcc; }
+    .controls button, .move-btn {
+      font-size: 14px; padding: 3px 6px; margin: 0 2px; cursor: pointer;
+      background: #eee; border: 1px solid #aaa; border-radius: 3px;
     }
-    textarea { width: 100%; height: 80px; font-family: monospace; font-size: 13px; }
+    .move-btn:hover { background: #ddd; }
+    .track-title {
+      flex-grow: 1;
+      margin-right: 10px;
+    }
+    textarea { width: 100%; height: 80px; resize: vertical; font-family: monospace; font-size: 13px; }
+    .info { margin-top: 5px; }
+    .total-time { font-weight: bold; padding: 5px; background: #eee; text-align: right; }
   </style>
 </head>
 <body>
+  <div class="panel">
+    <div class="title">Pista actual</div>
+    <div id="current">Ninguna pista</div>
+    <div class="info">
+      <b>Duración:</b> <span id="dur">--:--</span> |
+      <b>Restante:</b> <span id="left">--:--</span> |
+      <b>Volumen:</b> <input type="range" id="vol" min="0" max="100" value="100" oninput="setVolume(this.value)" />
+      <label><input type="checkbox" id="auto" checked> Reproducir lista completa</label>
+    </div>
+  </div>
 
   <div class="panel">
     <div class="title">Pegar enlaces de YouTube (puede estar mezclado con texto)</div>
-    <textarea id="inputLinks" placeholder="Pega acá varios links o texto con links de YouTube..."></textarea>
-    <button onclick="addVideos()">Agregar todos</button>
+    <textarea id="url" placeholder="Pega acá varios links o texto con links de YouTube..."></textarea>
+    <button onclick="add()">Agregar todos</button>
   </div>
 
   <div class="panel">
     <div class="title">Lista de reproducción</div>
-    <ul id="playlist" class="playlist"></ul>
+    <ul id="sortable" class="playlist"></ul>
+    <div class="total-time" id="totaltime">Duración total: --:--</div>
   </div>
 
-  <div class="panel controls">
+  <div class="controls">
     <button onclick="prev()">⏮️</button>
-    <button onclick="playPause()">⏯️</button>
+    <button onclick="togglePlay()">⏯️</button>
     <button onclick="stop()">⏹️</button>
     <button onclick="next()">⏭️</button>
   </div>
 
   <div id="player"></div>
 
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
   <script>
-    let player;
     let playlist = [];
-    let currentIndex = -1;
-    let isPlaying = false;
-    let apiReady = false;
+    let current = -1;
+    let player;
+    let paused = false;
+    let timer;
+
+    function formatTime(t) {
+      let m = Math.floor(t / 60), s = Math.floor(t % 60);
+      return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+    }
+
+    function updateTotalTime() {
+      let sum = playlist.reduce((acc, t) => acc + (t.duration || 0), 0);
+      document.getElementById("totaltime").innerText = "Duración total: " + formatTime(sum);
+    }
+
+    function extractYouTubeIDs(text) {
+      let regex = /(?:https?:\/\/)?(?:www\\.)?(?:youtube\\.com\\/(?:watch\\?v=|embed\\/)|youtu\\.be\\/)([\\w-]{11})/g;
+      let matches = [...text.matchAll(regex)];
+      return matches.map(m => m[1]);
+    }
+
+    function loadDurationForTrack(index) {
+      if(index < 0 || index >= playlist.length) return;
+      setTimeout(() => {
+        let dur = player.getDuration();
+        if(dur && dur > 0) {
+          playlist[index].duration = Math.floor(dur);
+          updateTotalTime();
+          render();
+        } else {
+          loadDurationForTrack(index);
+        }
+      }, 500);
+    }
+
+    function add() {
+      const input = document.getElementById("url");
+      const ids = extractYouTubeIDs(input.value.trim());
+      if (ids.length === 0) return alert("No se detectaron enlaces válidos de YouTube.");
+      ids.forEach(id => {
+        if (!playlist.some(t => t.id === id)) {
+          fetch(`https://noembed.com/embed?url=https://youtube.com/watch?v=${id}`)
+            .then(res => res.json())
+            .then(data => {
+              playlist.push({ id, title: data.title || id, duration: 0 });
+              render();
+              if (current === -1) play(0);
+            });
+        }
+      });
+      input.value = "";
+    }
+
+    function render() {
+      const ul = document.getElementById("sortable");
+      ul.innerHTML = "";
+      playlist.forEach((track, i) => {
+        let li = document.createElement("li");
+        li.className = "track";
+        if (i === current && !paused) li.classList.add("playing");
+        else if (i > current) li.classList.add("queued");
+
+        let durText = track.duration > 0 ? formatTime(track.duration) : "--:--";
+
+        const spanText = document.createElement("span");
+        spanText.className = "track-title";
+        spanText.textContent = `${track.title} (${durText})`;
+        spanText.ondblclick = () => play(i);
+
+        const btnUp = document.createElement("button");
+        btnUp.className = "move-btn";
+        btnUp.textContent = "↑";
+        btnUp.disabled = (i === 0);
+        btnUp.onclick = (e) => { e.stopPropagation(); moveTrack(i, i -1); };
+
+        const btnDown = document.createElement("button");
+        btnDown.className = "move-btn";
+        btnDown.textContent = "↓";
+        btnDown.disabled = (i === playlist.length -1);
+        btnDown.onclick = (e) => { e.stopPropagation(); moveTrack(i, i +1); };
+
+        li.appendChild(spanText);
+        li.appendChild(btnUp);
+        li.appendChild(btnDown);
+        ul.appendChild(li);
+      });
+      document.getElementById("current").innerText = current >= 0 ? playlist[current].title : "Ninguna pista";
+      updateTotalTime();
+    }
+
+    function moveTrack(oldIndex, newIndex) {
+      if(newIndex < 0 || newIndex >= playlist.length) return;
+      const moved = playlist.splice(oldIndex, 1)[0];
+      playlist.splice(newIndex, 0, moved);
+      if (current === oldIndex) current = newIndex;
+      else if (oldIndex < current && newIndex >= current) current--;
+      else if (oldIndex > current && newIndex <= current) current++;
+      render();
+    }
 
     function onYouTubeIframeAPIReady() {
-      player = new YT.Player('player', {
-        height: '180',
-        width: '320',
-        events: {
-          'onReady': () => { apiReady = true; },
-          'onStateChange': onPlayerStateChange
+      player = new YT.Player("player", {
+        height: "0", width: "0", events: {
+          onReady: () => {
+            if(current >= 0) loadDurationForTrack(current);
+          },
+          onStateChange: e => {
+            if (e.data === 0 && document.getElementById("auto").checked) next();
+            if(e.data === 1) { loadDurationForTrack(current); updateTimer(); render(); }
+            if(e.data === 2) { paused = true; render(); }
+            if(e.data === -1) { stopTimer(); paused = false; render(); }
+          }
         }
       });
     }
 
-    function extractYouTubeIDs(text) {
-      const regex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w\-]{11})/g;
-      const matches = [];
-      let match;
-      while ((match = regex.exec(text)) !== null) {
-        matches.push(match[1]);
-      }
-      return [...new Set(matches)].filter(id => id.length === 11);
-    }
-
-    function addVideos() {
-      if (!apiReady) {
-        alert("La API de YouTube no está lista aún.");
-        return;
-      }
-      const text = document.getElementById("inputLinks").value;
-      const ids = extractYouTubeIDs(text);
-      if (ids.length === 0) {
-        alert("No se encontraron enlaces de YouTube válidos.");
-        return;
-      }
-      ids.forEach(id => {
-        if (!playlist.includes(id)) playlist.push(id);
-      });
-      document.getElementById("inputLinks").value = "";
-      renderPlaylist();
-      if (currentIndex === -1) playVideo(0);
-    }
-
-    function renderPlaylist() {
-      const ul = document.getElementById('playlist');
-      ul.innerHTML = '';
-      playlist.forEach((id, i) => {
-        const li = document.createElement('li');
-        li.className = 'track';
-        if (i === currentIndex) li.classList.add('playing');
-        else if (i === currentIndex + 1) li.classList.add('next-up');
-        li.textContent = `Video ID: ${id}`;
-        li.onclick = () => playVideo(i);
-        ul.appendChild(li);
-      });
-    }
-
-    function playVideo(i) {
-      if (!apiReady || !player) return;
+    function play(i) {
       if (i < 0 || i >= playlist.length) return;
-      currentIndex = i;
-      player.loadVideoById(playlist[i]);
-      isPlaying = true;
-      renderPlaylist();
+      current = i;
+      paused = false;
+      player.loadVideoById(playlist[i].id);
+      updateTimer();
+      render();
     }
 
-    function playPause() {
+    function togglePlay() {
       if (!player) return;
       const state = player.getPlayerState();
-      if (state === YT.PlayerState.PLAYING) {
-        player.pauseVideo();
-        isPlaying = false;
-      } else {
-        player.playVideo();
-        isPlaying = true;
-      }
-      renderPlaylist();
+      if (state === 1) { paused = true; player.pauseVideo(); }
+      else if (state === 2) { paused = false; player.playVideo(); updateTimer(); }
+      else if (state === 0 || state === -1) play(current >= 0 ? current : 0);
+      render();
     }
 
     function stop() {
-      if (!player) return;
-      player.stopVideo();
-      isPlaying = false;
-      renderPlaylist();
+      paused = false; current = -1;
+      player.stopVideo(); stopTimer(); render();
     }
 
     function next() {
-      if (currentIndex + 1 < playlist.length) playVideo(currentIndex + 1);
+      if (current + 1 < playlist.length) play(current + 1);
+      else stop();
     }
 
     function prev() {
-      if (currentIndex > 0) playVideo(currentIndex - 1);
+      if (current > 0) play(current - 1);
     }
 
-    function onPlayerStateChange(event) {
-      if (event.data === YT.PlayerState.ENDED) {
-        if (currentIndex + 1 < playlist.length) playVideo(currentIndex + 1);
-        else isPlaying = false;
-      }
+    function updateTimer() {
+      stopTimer();
+      timer = setInterval(() => {
+        try {
+          let dur = Math.floor(player.getDuration());
+          let cur = Math.floor(player.getCurrentTime());
+          document.getElementById("dur").innerText = formatTime(dur);
+          document.getElementById("left").innerText = formatTime(Math.max(0, dur - cur));
+          if(current >= 0 && playlist[current] && playlist[current].duration !== dur) {
+            playlist[current].duration = dur;
+            updateTotalTime();
+            render();
+          }
+        } catch {}
+      }, 1000);
     }
+
+    function stopTimer() {
+      clearInterval(timer);
+    }
+
+    function setVolume(v) {
+      if (player) player.setVolume(parseInt(v));
+    }
+
+    new Sortable(document.getElementById("sortable"), {
+      animation: 150,
+      onEnd: function (evt) {
+        const moved = playlist.splice(evt.oldIndex, 1)[0];
+        playlist.splice(evt.newIndex, 0, moved);
+        if (current === evt.oldIndex) current = evt.newIndex;
+        else if (evt.oldIndex < current && evt.newIndex >= current) current--;
+        else if (evt.oldIndex > current && evt.newIndex <= current) current++;
+        render();
+      }
+    });
   </script>
-  <script src="https://www.youtube.com/iframe_api"></script>
 </body>
 </html>
