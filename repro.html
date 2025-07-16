@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Zara Radio YouTube - Sin errores</title>
+  <style>
+    body { font-family: Tahoma, sans-serif; background: #d4d0c8; padding: 10px; font-size: 13px; }
+    .panel { background: #fff; border: 2px inset #aaa; padding: 10px; margin-bottom: 10px; }
+    .title { background: #000080; color: white; padding: 5px; margin-bottom: 5px; font-weight: bold; }
+    .playlist { max-height: 250px; overflow-y: auto; border: 1px solid #999; padding-left: 0; list-style: none; }
+    .track {
+      padding: 5px; border-bottom: 1px solid #ccc; cursor: pointer; user-select: none;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .track.playing { background: #ff0000; color: white; font-weight: bold; }
+    .track.next-up { background: #00cc00; color: white; }
+    .controls button {
+      font-size: 20px; padding: 6px 12px; margin: 0 4px; cursor: pointer;
+      background: #eee; border: 1px solid #aaa; border-radius: 4px;
+    }
+    textarea { width: 100%; height: 80px; font-family: monospace; font-size: 13px; }
+  </style>
+</head>
+<body>
+
+  <div class="panel">
+    <div class="title">Pegar enlaces de YouTube (puede estar mezclado con texto)</div>
+    <textarea id="inputLinks" placeholder="Pega acá varios links o texto con links de YouTube..."></textarea>
+    <button onclick="addVideos()">Agregar todos</button>
+  </div>
+
+  <div class="panel">
+    <div class="title">Lista de reproducción</div>
+    <ul id="playlist" class="playlist"></ul>
+  </div>
+
+  <div class="panel controls">
+    <button onclick="prev()">⏮️</button>
+    <button onclick="playPause()">⏯️</button>
+    <button onclick="stop()">⏹️</button>
+    <button onclick="next()">⏭️</button>
+  </div>
+
+  <div id="player"></div>
+
+  <script>
+    let player;
+    let playlist = [];
+    let currentIndex = -1;
+    let isPlaying = false;
+    let apiReady = false;
+
+    function onYouTubeIframeAPIReady() {
+      player = new YT.Player('player', {
+        height: '180',
+        width: '320',
+        events: {
+          'onReady': () => { apiReady = true; },
+          'onStateChange': onPlayerStateChange
+        }
+      });
+    }
+
+    function extractYouTubeIDs(text) {
+      const regex = /(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w\-]{11})/g;
+      const matches = [];
+      let match;
+      while ((match = regex.exec(text)) !== null) {
+        matches.push(match[1]);
+      }
+      return [...new Set(matches)].filter(id => id.length === 11);
+    }
+
+    function addVideos() {
+      if (!apiReady) {
+        alert("La API de YouTube no está lista aún.");
+        return;
+      }
+      const text = document.getElementById("inputLinks").value;
+      const ids = extractYouTubeIDs(text);
+      if (ids.length === 0) {
+        alert("No se encontraron enlaces de YouTube válidos.");
+        return;
+      }
+      ids.forEach(id => {
+        if (!playlist.includes(id)) playlist.push(id);
+      });
+      document.getElementById("inputLinks").value = "";
+      renderPlaylist();
+      if (currentIndex === -1) playVideo(0);
+    }
+
+    function renderPlaylist() {
+      const ul = document.getElementById('playlist');
+      ul.innerHTML = '';
+      playlist.forEach((id, i) => {
+        const li = document.createElement('li');
+        li.className = 'track';
+        if (i === currentIndex) li.classList.add('playing');
+        else if (i === currentIndex + 1) li.classList.add('next-up');
+        li.textContent = `Video ID: ${id}`;
+        li.onclick = () => playVideo(i);
+        ul.appendChild(li);
+      });
+    }
+
+    function playVideo(i) {
+      if (!apiReady || !player) return;
+      if (i < 0 || i >= playlist.length) return;
+      currentIndex = i;
+      player.loadVideoById(playlist[i]);
+      isPlaying = true;
+      renderPlaylist();
+    }
+
+    function playPause() {
+      if (!player) return;
+      const state = player.getPlayerState();
+      if (state === YT.PlayerState.PLAYING) {
+        player.pauseVideo();
+        isPlaying = false;
+      } else {
+        player.playVideo();
+        isPlaying = true;
+      }
+      renderPlaylist();
+    }
+
+    function stop() {
+      if (!player) return;
+      player.stopVideo();
+      isPlaying = false;
+      renderPlaylist();
+    }
+
+    function next() {
+      if (currentIndex + 1 < playlist.length) playVideo(currentIndex + 1);
+    }
+
+    function prev() {
+      if (currentIndex > 0) playVideo(currentIndex - 1);
+    }
+
+    function onPlayerStateChange(event) {
+      if (event.data === YT.PlayerState.ENDED) {
+        if (currentIndex + 1 < playlist.length) playVideo(currentIndex + 1);
+        else isPlaying = false;
+      }
+    }
+  </script>
+  <script src="https://www.youtube.com/iframe_api"></script>
+</body>
+</html>
